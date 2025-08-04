@@ -40,7 +40,6 @@ def get_stock_data(ticker, name):
     data['SMA_Signal'] = (data['50_SMA'] < data['200_SMA']).astype(int)
     data['Death_Cross'] = data['SMA_Signal'].diff()
     
-    # FIX: Replace deprecated .last('9M') with modern pandas filtering
     nine_months_ago = datetime.now() - timedelta(days=270)
     recent_data = data[data.index >= nine_months_ago]
     chart_patterns = find_chart_patterns(recent_data)
@@ -53,7 +52,12 @@ def find_chart_patterns(data, order=10, K=3):
     """
     patterns = {'double_top': [], 'head_shoulders': []}
     
-    # FIX: Drop NA values to prevent errors in argrelextrema
+    # FIX: Add a check to ensure required columns exist before proceeding.
+    required_columns = ['High', 'Low']
+    if not all(col in data.columns for col in required_columns):
+        # This will prevent the app from crashing if data is incomplete.
+        return patterns
+
     clean_data = data.dropna(subset=['High', 'Low'])
     if len(clean_data) < (order * 2 + 1):
         return patterns
