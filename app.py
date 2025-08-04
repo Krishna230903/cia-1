@@ -52,11 +52,14 @@ def find_chart_patterns(data, order=10, K=3):
     Detects Double Top and Head and Shoulders patterns.
     """
     patterns = {'double_top': [], 'head_shoulders': []}
-    if len(data) < (order * 2 + 1):
+    
+    # FIX: Drop NA values to prevent errors in argrelextrema
+    clean_data = data.dropna(subset=['High', 'Low'])
+    if len(clean_data) < (order * 2 + 1):
         return patterns
 
-    highs = data['High']
-    lows = data['Low']
+    highs = clean_data['High']
+    lows = clean_data['Low']
     
     peak_indices = argrelextrema(highs.values, np.greater, order=order)[0]
     valley_indices = argrelextrema(lows.values, np.less, order=order)[0]
@@ -64,24 +67,26 @@ def find_chart_patterns(data, order=10, K=3):
     peaks = highs.iloc[peak_indices]
     valleys = lows.iloc[valley_indices]
 
-    # Find Double Top
-    for i in range(len(peaks) - 1):
-        p1_idx, p2_idx = peaks.index[i], peaks.index[i+1]
-        p1_val, p2_val = peaks.iloc[i], peaks.iloc[i+1]
-        if abs(p1_val - p2_val) / p2_val <= K / 100:
-            intervening_valleys = valleys[(valleys.index > p1_idx) & (valleys.index < p2_idx)]
-            if not intervening_valleys.empty:
-                patterns['double_top'].append((p1_idx, p2_idx))
+    # Find Double Top (requires at least 2 peaks)
+    if len(peaks) >= 2:
+        for i in range(len(peaks) - 1):
+            p1_idx, p2_idx = peaks.index[i], peaks.index[i+1]
+            p1_val, p2_val = peaks.iloc[i], peaks.iloc[i+1]
+            if abs(p1_val - p2_val) / p2_val <= K / 100:
+                intervening_valleys = valleys[(valleys.index > p1_idx) & (valleys.index < p2_idx)]
+                if not intervening_valleys.empty:
+                    patterns['double_top'].append((p1_idx, p2_idx))
 
-    # Find Head and Shoulders
-    for i in range(len(peaks) - 2):
-        s1_idx, h_idx, s2_idx = peaks.index[i], peaks.index[i+1], peaks.index[i+2]
-        s1_val, h_val, s2_val = peaks.iloc[i], peaks.iloc[i+1], peaks.iloc[i+2]
-        if h_val > s1_val and h_val > s2_val and abs(s1_val - s2_val) / s2_val <= (K + 5) / 100:
-            v1 = valleys[(valleys.index > s1_idx) & (valleys.index < h_idx)]
-            v2 = valleys[(valleys.index > h_idx) & (valleys.index < s2_idx)]
-            if not v1.empty and not v2.empty:
-                patterns['head_shoulders'].append((s1_idx, h_idx, s2_idx))
+    # Find Head and Shoulders (requires at least 3 peaks)
+    if len(peaks) >= 3:
+        for i in range(len(peaks) - 2):
+            s1_idx, h_idx, s2_idx = peaks.index[i], peaks.index[i+1], peaks.index[i+2]
+            s1_val, h_val, s2_val = peaks.iloc[i], peaks.iloc[i+1], peaks.iloc[i+2]
+            if h_val > s1_val and h_val > s2_val and abs(s1_val - s2_val) / s2_val <= (K + 5) / 100:
+                v1 = valleys[(valleys.index > s1_idx) & (valleys.index < h_idx)]
+                v2 = valleys[(valleys.index > h_idx) & (valleys.index < s2_idx)]
+                if not v1.empty and not v2.empty:
+                    patterns['head_shoulders'].append((s1_idx, h_idx, s2_idx))
                 
     return patterns
 
