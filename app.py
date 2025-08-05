@@ -4,7 +4,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-import ta
 import numpy as np
 from scipy.signal import argrelextrema
 from datetime import datetime, timedelta
@@ -45,7 +44,7 @@ START_DATE: datetime = END_DATE - timedelta(days=days_to_subtract)
 
 # --- Core Functions ---
 
-@st.cache_data(ttl=1800)  # Cache data for 30 minutes
+@st.cache_data(ttl=1800)
 def fetch_data(ticker: str, start: datetime, end: datetime) -> Optional[pd.DataFrame]:
     """Fetches and cleans historical stock data from Yahoo Finance."""
     try:
@@ -60,12 +59,31 @@ def fetch_data(ticker: str, start: datetime, end: datetime) -> Optional[pd.DataF
         return None
 
 def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
-    """Calculates all necessary technical indicators."""
-    data['SMA50'] = ta.trend.sma_indicator(data['Close'], window=50)
-    data['SMA200'] = ta.trend.sma_indicator(data['Close'], window=200)
-    data['RSI'] = ta.momentum.rsi(data['Close'], window=14)
-    bb_indicator = ta.volatility.BollingerBands(close=data["Close"], window=20, window_dev=2)
-    data['BB_High'] = bb_indicator.bollinger_hband()
+    """
+    Calculates all necessary technical indicators manually using Pandas.
+    This is the alternate to using the 'ta' library.
+    """
+    # Simple Moving Averages (SMA)
+    data['SMA50'] = data['Close'].rolling(window=50).mean()
+    data['SMA200'] = data['Close'].rolling(window=200).mean()
+
+    # Bollinger Bands
+    sma20 = data['Close'].rolling(window=20).mean()
+    std_dev = data['Close'].rolling(window=20).std()
+    data['BB_High'] = sma20 + (std_dev * 2)
+
+    # Relative Strength Index (RSI)
+    delta = data['Close'].diff(1)
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
+    avg_gain = gain.ewm(com=14 - 1, adjust=False).mean()
+    avg_loss = loss.ewm(com=14 - 1, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    # Handle potential division by zero and NaN values
+    rs.replace([np.inf, -np.inf], 1e9, inplace=True)
+    rs.fillna(1, inplace=True)
+    data['RSI'] = 100.0 - (100.0 / (1.0 + rs))
+
     return data
 
 def find_bearish_patterns(data: pd.DataFrame, order: int = 20, K: int = 3) -> Dict[str, List[Tuple]]:
@@ -162,11 +180,9 @@ for name, ticker in TARGETS.items():
                 st.error(f"Could not retrieve or process data for {name}. The ticker might be invalid or there might be no data for the selected period.")
                 continue
 
-            # Perform all calculations and detections
             stock_data = calculate_indicators(stock_data)
             bearish_patterns = find_bearish_patterns(stock_data)
 
-            # Create the layout within the expander
             chart_col, summary_col = st.columns([2, 1])
 
             with chart_col:
