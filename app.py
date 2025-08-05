@@ -1,186 +1,152 @@
-# app.py
-# -*- coding: utf-8 -*-
-
-"""
-This is a Streamlit web application that performs a bearish technical analysis
-on Nifty 50 and selected stocks.
-
-To Run This App Locally:
-1. Make sure you have Python installed.
-2. Install Streamlit and other libraries:
-   pip install streamlit yfinance pandas matplotlib numpy scipy
-3. Save this code as `app.py`.
-4. Open your terminal, navigate to the file's directory, and run:
-   streamlit run app.py
-"""
-
-import streamlit as st
+import dash
+from dash import dcc, html
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import yfinance as yf
 import pandas as pd
-import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
 import numpy as np
-from scipy.signal import argrelextrema
-from datetime import datetime, timedelta
 
-# --- Functions for Analysis ---
+# Initialize the Dash app
+app = dash.Dash(__name__)
+app.title = "Stock Technical Analysis"
 
-@st.cache_data(ttl=3600) # Cache data for 1 hour (3600 seconds)
-def get_stock_data(ticker, name):
-    """
-    Fetches, analyzes, and returns data for a given stock ticker.
-    This function is cached to prevent rate-limiting.
-    """
-    data = yf.download(ticker, period='2y', auto_adjust=True, progress=False)
-    if data.empty:
-        return None, None
-
-    # Calculations
-    data['50_SMA'] = data['Close'].rolling(window=50).mean()
-    data['200_SMA'] = data['Close'].rolling(window=200).mean()
-    data['SMA_Signal'] = (data['50_SMA'] < data['200_SMA']).astype(int)
-    data['Death_Cross'] = data['SMA_Signal'].diff()
-    
-    nine_months_ago = datetime.now() - timedelta(days=270)
-    recent_data = data[data.index >= nine_months_ago]
-    chart_patterns = find_chart_patterns(recent_data)
-    
-    return data, chart_patterns
-
-def find_chart_patterns(data, order=10, K=3):
-    """
-    Detects Double Top and Head and Shoulders patterns.
-    """
-    patterns = {'double_top': [], 'head_shoulders': []}
-    
-    # FIX: Add a check to ensure required columns exist before proceeding.
-    required_columns = ['High', 'Low']
-    if not all(col in data.columns for col in required_columns):
-        # This will prevent the app from crashing if data is incomplete.
-        return patterns
-
-    clean_data = data.dropna(subset=['High', 'Low'])
-    if len(clean_data) < (order * 2 + 1):
-        return patterns
-
-    highs = clean_data['High']
-    lows = clean_data['Low']
-    
-    peak_indices = argrelextrema(highs.values, np.greater, order=order)[0]
-    valley_indices = argrelextrema(lows.values, np.less, order=order)[0]
-    
-    peaks = highs.iloc[peak_indices]
-    valleys = lows.iloc[valley_indices]
-
-    # Find Double Top (requires at least 2 peaks)
-    if len(peaks) >= 2:
-        for i in range(len(peaks) - 1):
-            p1_idx, p2_idx = peaks.index[i], peaks.index[i+1]
-            p1_val, p2_val = peaks.iloc[i], peaks.iloc[i+1]
-            if abs(p1_val - p2_val) / p2_val <= K / 100:
-                intervening_valleys = valleys[(valleys.index > p1_idx) & (valleys.index < p2_idx)]
-                if not intervening_valleys.empty:
-                    patterns['double_top'].append((p1_idx, p2_idx))
-
-    # Find Head and Shoulders (requires at least 3 peaks)
-    if len(peaks) >= 3:
-        for i in range(len(peaks) - 2):
-            s1_idx, h_idx, s2_idx = peaks.index[i], peaks.index[i+1], peaks.index[i+2]
-            s1_val, h_val, s2_val = peaks.iloc[i], peaks.iloc[i+1], peaks.iloc[i+2]
-            if h_val > s1_val and h_val > s2_val and abs(s1_val - s2_val) / s2_val <= (K + 5) / 100:
-                v1 = valleys[(valleys.index > s1_idx) & (valleys.index < h_idx)]
-                v2 = valleys[(valleys.index > h_idx) & (valleys.index < s2_idx)]
-                if not v1.empty and not v2.empty:
-                    patterns['head_shoulders'].append((s1_idx, h_idx, s2_idx))
-                
-    return patterns
-
-# --- Streamlit App UI and Logic ---
-
-st.set_page_config(layout="wide")
-st.title("Stock Market Bearish Analysis Dashboard")
-st.markdown(f"An interactive tool for technical analysis. Last updated: **{datetime.now().strftime('%d-%b-%Y %H:%M')}**")
-
-st.sidebar.header("Select Stock")
-stocks_to_analyze = {
-    'Nifty 50': '^NSEI',
-    'Adani Enterprises': 'ADANIENT.NS',
-    'ITC Ltd': 'ITC.NS',
-    'Titan Company': 'TITAN.NS'
+# --- Stock Tickers and Time Period ---
+tickers = {
+    "Nifty 50": "^NSEI",
+    "Adani Enterprises": "ADANIENT.NS",
+    "ITC": "ITC.NS",
+    "Titan": "TITAN.NS",
 }
-selected_name = st.sidebar.selectbox("Choose a stock or index to analyze:", list(stocks_to_analyze.keys()))
-selected_ticker = stocks_to_analyze[selected_name]
+period = "1y" # Use one year of data for analysis
 
-if st.sidebar.button("Analyze"):
-    with st.spinner(f"Fetching and analyzing data for {selected_name}..."):
-        data, chart_patterns = get_stock_data(selected_ticker, selected_name)
-        
-        if data is None:
-            st.error(f"Could not download data for {selected_name}. YFinance might be rate-limiting. Please try again in a few minutes.")
-        else:
-            death_cross_points = data[data['Death_Cross'] == 1]
-            last_data_point = data.iloc[-1]
-            last_price = last_data_point['Close']
-            
-            col1, col2 = st.columns([1, 2])
+# --- Function to Fetch and Analyze Stock Data ---
+def analyze_stock(ticker_symbol, stock_name):
+    """
+    Fetches stock data, performs technical analysis, and generates a plot.
+    """
+    # Fetch historical data
+    stock_data = yf.download(ticker_symbol, period=period, progress=False)
 
-            with col1:
-                st.subheader(f"Bearish Analysis for {selected_name}")
-                is_bearish = False
-                
-                if not death_cross_points.empty and (data.index[-1] - death_cross_points.index[-1]).days < 180:
-                    st.warning(f"**DEATH CROSS ACTIVE:** A 'Death Cross' occurred on {death_cross_points.index[-1].date()}. This is a strong long-term bearish signal.")
-                    is_bearish = True
-                
-                if last_price < last_data_point['50_SMA']:
-                    st.warning(f"**SHORT-TERM WEAKNESS:** The current price ({last_price:.2f}) is below the 50-Day SMA ({last_data_point['50_SMA']:.2f}).")
-                    is_bearish = True
-                    
-                if chart_patterns['double_top']:
-                    st.error("**PATTERN ALERT:** A potential 'Double Top' bearish pattern may have formed recently.")
-                    is_bearish = True
-                    
-                if chart_patterns['head_shoulders']:
-                    st.error("**PATTERN ALERT:** A potential 'Head and Shoulders' bearish pattern may have formed recently.")
-                    is_bearish = True
+    if stock_data.empty:
+        return html.Div(f"Could not retrieve data for {stock_name}. Please check the ticker symbol.")
 
-                if not is_bearish:
-                    st.success("No strong immediate bearish signals detected from moving averages or chart patterns.")
+    # --- Technical Analysis ---
+    # Moving Averages (MA)
+    stock_data['MA50'] = stock_data['Close'].rolling(window=50).mean()
+    stock_data['MA200'] = stock_data['Close'].rolling(window=200).mean()
 
-                st.subheader("Potential Downside Targets")
-                target1 = last_price * 0.98
-                target2 = last_price * 0.95
-                st.markdown(f"  - **Moderate Target (~2% Fall):** `{target1:.2f}`")
-                st.markdown(f"  - **Stronger Correction (~5% Fall):** `{target2:.2f}`")
+    # Relative Strength Index (RSI)
+    delta = stock_data['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    stock_data['RSI'] = 100 - (100 / (1 + rs))
 
-            with col2:
-                st.subheader("Price Chart & Technical Indicators")
-                plt.style.use('seaborn-v0_8-darkgrid')
-                fig, ax = plt.subplots(figsize=(16, 8))
+    # Moving Average Convergence Divergence (MACD)
+    exp1 = stock_data['Close'].ewm(span=12, adjust=False).mean()
+    exp2 = stock_data['Close'].ewm(span=26, adjust=False).mean()
+    stock_data['MACD'] = exp1 - exp2
+    stock_data['Signal_Line'] = stock_data['MACD'].ewm(span=9, adjust=False).mean()
 
-                ax.plot(data.index, data['Close'], label='Close Price', color='black', alpha=0.8, linewidth=1.5)
-                ax.plot(data.index, data['50_SMA'], label='50-Day SMA', color='orange', linestyle='--', linewidth=2)
-                ax.plot(data.index, data['200_SMA'], label='200-Day SMA', color='purple', linestyle='--', linewidth=2)
+    # --- Price Prediction (Simple Linear Regression for next 14 days) ---
+    df_pred = stock_data[['Close']].copy()
+    df_pred['Date'] = df_pred.index
+    df_pred['Date'] = df_pred['Date'].map(pd.to_datetime)
+    df_pred['Date_ordinal'] = df_pred['Date'].map(pd.Timestamp.toordinal)
 
-                if not death_cross_points.empty:
-                    ax.plot(death_cross_points.index, death_cross_points['50_SMA'], 'X', color='red', markersize=15, markeredgewidth=3, label='Death Cross')
+    # Use last 60 days for trend
+    X = df_pred['Date_ordinal'][-60:].values.reshape(-1, 1)
+    y = df_pred['Close'][-60:].values
 
-                for p1, p2 in chart_patterns['double_top']:
-                    ax.plot([p1, p2], [data.loc[p1, 'High'], data.loc[p2, 'High']], 'o-', color='red', markersize=10, label='Double Top Pattern')
-                
-                for s1, h, s2 in chart_patterns['head_shoulders']:
-                    ax.plot([s1, h, s2], [data.loc[s1, 'High'], data.loc[h, 'High'], data.loc[s2, 'High']], 'o-', color='magenta', markersize=10, label='Head & Shoulders')
+    model = LinearRegression()
+    model.fit(X, y)
 
-                ax.axhline(y=target1, color='darkred', linestyle=':', linewidth=2, label=f'Target 1 ({target1:.2f})')
-                ax.axhline(y=target2, color='maroon', linestyle=':', linewidth=2, label=f'Target 2 ({target2:.2f})')
+    # Predict next 14 days
+    last_date = df_pred['Date_ordinal'].iloc[-1]
+    future_dates_ordinal = np.array([last_date + i for i in range(1, 15)]).reshape(-1, 1)
+    predicted_prices = model.predict(future_dates_ordinal)
+    
+    future_dates = [pd.to_datetime(pd.Timestamp.fromordinal(int(i))) for i in future_dates_ordinal.flatten()]
 
-                ax.set_title(f'{selected_name} ({selected_ticker}) - Bearish Technical Analysis', fontsize=18, weight='bold')
-                ax.set_ylabel('Price (INR)')
-                
-                handles, labels = plt.gca().get_legend_handles_labels()
-                by_label = dict(zip(labels, handles))
-                ax.legend(by_label.values(), by_label.keys(), loc='upper left')
-                ax.grid(True)
-                
-                st.pyplot(fig)
-else:
-    st.info("Select a stock from the sidebar and click 'Analyze' to begin.")
+    # --- Create the Plot ---
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        subplot_titles=(f"{stock_name} Candlestick Chart", "RSI", "MACD"),
+        row_heights=[0.6, 0.2, 0.2]
+    )
+
+    # Candlestick chart with Moving Averages
+    fig.add_trace(go.Candlestick(
+        x=stock_data.index,
+        open=stock_data['Open'],
+        high=stock_data['High'],
+        low=stock_data['Low'],
+        close=stock_data['Close'],
+        name="Candlestick"
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['MA50'], mode='lines', name='50-Day MA', line=dict(color='orange')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['MA200'], mode='lines', name='200-Day MA', line=dict(color='purple')), row=1, col=1)
+
+    # Add predicted prices to the main chart
+    fig.add_trace(go.Scatter(x=future_dates, y=predicted_prices, mode='lines', name='Prediction (14 days)', line=dict(color='cyan', dash='dot')), row=1, col=1)
+
+
+    # RSI
+    fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['RSI'], mode='lines', name='RSI'), row=2, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+
+    # MACD
+    fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['MACD'], mode='lines', name='MACD'), row=3, col=1)
+    fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['Signal_Line'], mode='lines', name='Signal Line'), row=3, col=1)
+
+    fig.update_layout(
+        height=700,
+        title_text=f"Technical Analysis: {stock_name}",
+        legend_title="Indicators",
+        xaxis_rangeslider_visible=False,
+    )
+
+    # --- Bearish Analysis Text ---
+    last_close = stock_data['Close'].iloc[-1]
+    ma50 = stock_data['MA50'].iloc[-1]
+    ma200 = stock_data['MA200'].iloc[-1]
+    rsi = stock_data['RSI'].iloc[-1]
+    macd = stock_data['MACD'].iloc[-1]
+    signal = stock_data['Signal_Line'].iloc[-1]
+    
+    analysis_text = f"""
+    ### Bearish Scenario Analysis for {stock_name}
+
+    * **Moving Averages:** The 50-day MA ({ma50:.2f}) is currently {'above' if ma50 > ma200 else 'below'} the 200-day MA ({ma200:.2f}). A "death cross" (50-day MA crossing below 200-day MA) is a strong bearish signal. The current price ({last_close:.2f}) is trading {'above' if last_close > ma50 else 'below'} its 50-day moving average, suggesting short-term weakness.
+    * **RSI:** The current RSI is {rsi:.2f}. An RSI above 70 is often considered overbought, suggesting a potential pullback. While not in extreme territory, any move towards 70 could indicate building selling pressure.
+    * **MACD:** The MACD line ({macd:.2f}) is currently {'above' if macd > signal else 'below'} the Signal line ({signal:.2f}). A crossover where the MACD line goes below the Signal line is a bearish indicator.
+    * **Prediction:** Based on a linear regression of the last 60 days, the predicted price for the next two weeks shows a potential continuation of the recent trend. The predicted price in 14 days is **{predicted_prices[-1]:.2f}**.
+
+    **Disclaimer:** This is a simplified analysis and not financial advice.
+    """
+
+    return html.Div([
+        dcc.Graph(figure=fig),
+        dcc.Markdown(analysis_text, style={'padding': '20px', 'border': '1px solid #ddd', 'border-radius': '5px', 'margin-top': '20px'})
+    ])
+
+# --- App Layout ---
+app.layout = html.Div([
+    html.H1("Stock Market Technical Analysis (Bearish Scenario)", style={'textAlign': 'center'}),
+    html.P("This dashboard displays a technical analysis of selected stocks with a focus on identifying potential bearish trends. All data is fetched in real-time.", style={'textAlign': 'center'}),
+    html.Hr(),
+    # Generate a section for each stock
+    *[html.Div([
+        html.H2(stock_name, style={'textAlign': 'center'}),
+        analyze_stock(ticker, stock_name)
+    ], style={'padding': '20px'}) for stock_name, ticker in tickers.items()]
+])
+
+# --- Run the App ---
+if __name__ == '__main__':
+    app.run_server(debug=True)
