@@ -78,13 +78,16 @@ START_DATE: datetime = END_DATE - timedelta(days=days_to_subtract)
 
 @st.cache_data(ttl=1800)
 def fetch_data(ticker: str, start: datetime, end: datetime) -> Optional[pd.DataFrame]:
+    """Fetches and cleans historical stock data from Yahoo Finance."""
     try:
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+        # THE FIX IS HERE: Set auto_adjust=False to get standard uppercase column names
+        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
         return data if not data.empty else None
     except Exception:
         return None
 
 def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
+    """Calculates all necessary technical indicators."""
     data['SMA50'] = data['Close'].rolling(window=50).mean()
     data['SMA200'] = data['Close'].rolling(window=200).mean()
     sma20 = data['Close'].rolling(window=20).mean()
@@ -100,6 +103,7 @@ def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 def find_patterns_and_levels(data: pd.DataFrame, order: int = 20) -> Tuple[Dict[str, List], List[float]]:
+    """Detects patterns and identifies key support levels."""
     patterns: Dict[str, List] = {'double_top': [], 'head_shoulders': []}
     highs = data['High']
     lows = data['Low']
@@ -119,11 +123,13 @@ def find_patterns_and_levels(data: pd.DataFrame, order: int = 20) -> Tuple[Dict[
                 patterns['head_shoulders'].append((peaks.index[i], peaks.index[i+1], peaks.index[i+2]))
 
     valley_indices = argrelextrema(lows.values, np.less, order=order)[0]
-    support_levels = lows.iloc[valley_indices][lows.iloc[valley_indices] < data['Close'].iloc[-1]].tail(2).tolist()
+    recent_lows = lows.iloc[valley_indices]
+    support_levels = recent_lows[recent_lows < data['Close'].iloc[-1]].tail(2).tolist()
     
     return patterns, sorted(support_levels, reverse=True)
 
 def calculate_bearish_score(data: pd.DataFrame, patterns: Dict[str, List]) -> Tuple[int, List[str]]:
+    """Calculates a weighted score based on active bearish signals."""
     score = 0
     reasons = []
     latest = data.iloc[-1]
@@ -138,6 +144,7 @@ def calculate_bearish_score(data: pd.DataFrame, patterns: Dict[str, List]) -> Tu
     return min(score, 10), reasons
 
 def create_gauge(score: int) -> go.Figure:
+    """Creates a visual gauge for the bearish confidence score."""
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=score,
@@ -160,6 +167,7 @@ def create_gauge(score: int) -> go.Figure:
     return fig
 
 def create_main_chart(data: pd.DataFrame, patterns: Dict, supports: List[float]) -> go.Figure:
+    """Creates the main candlestick chart with all overlays."""
     fig = go.Figure(data=[go.Candlestick(
         x=data.index, open=data['Open'], high=data['High'],
         low=data['Low'], close=data['Close'], name='Price'
@@ -174,7 +182,6 @@ def create_main_chart(data: pd.DataFrame, patterns: Dict, supports: List[float])
 
 # --- Main Application Layout ---
 
-# Create tabs for each stock
 tab_list = st.tabs([f"**{name}**" for name in TARGETS.keys()])
 
 for i, (name, ticker) in enumerate(TARGETS.items()):
@@ -185,12 +192,10 @@ for i, (name, ticker) in enumerate(TARGETS.items()):
             st.error("Could not retrieve stock data. Please check the ticker or try again later.")
             continue
 
-        # Calculations
         stock_data = calculate_indicators(stock_data)
         patterns, support_levels = find_patterns_and_levels(stock_data)
         bearish_score, reasons = calculate_bearish_score(stock_data, patterns)
 
-        # Layout
         summary_col, chart_col = st.columns([1, 2])
 
         with summary_col:
