@@ -1,5 +1,4 @@
-import dash
-from dash import dcc, html
+import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
@@ -7,9 +6,14 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 import numpy as np
 
-# Initialize the Dash app
-app = dash.Dash(__name__)
-app.title = "Stock Technical Analysis"
+# --- Page Configuration ---
+st.set_page_config(page_title="Stock Technical Analysis", layout="wide")
+
+# --- App Title and Description ---
+st.title("Stock Market Technical Analysis (Bearish Scenario)")
+st.write("This dashboard displays a technical analysis of selected stocks with a focus on identifying potential bearish trends. All data is fetched in real-time.")
+st.markdown("---")
+
 
 # --- Stock Tickers and Time Period ---
 tickers = {
@@ -21,15 +25,22 @@ tickers = {
 period = "1y" # Use one year of data for analysis
 
 # --- Function to Fetch and Analyze Stock Data ---
+# Using st.cache_data to avoid re-downloading data on every interaction
+@st.cache_data
+def get_stock_data(ticker_symbol, period="1y"):
+    """Fetches historical stock data from Yahoo Finance."""
+    return yf.download(ticker_symbol, period=period, progress=False)
+
 def analyze_stock(ticker_symbol, stock_name):
     """
-    Fetches stock data, performs technical analysis, and generates a plot.
+    Performs technical analysis and generates the plot and text.
     """
     # Fetch historical data
-    stock_data = yf.download(ticker_symbol, period=period, progress=False)
+    stock_data = get_stock_data(ticker_symbol, period)
 
     if stock_data.empty:
-        return html.Div(f"Could not retrieve data for {stock_name}. Please check the ticker symbol.")
+        st.warning(f"Could not retrieve data for {stock_name}. Please check the ticker symbol.")
+        return
 
     # --- Technical Analysis ---
     # Moving Averages (MA)
@@ -70,6 +81,8 @@ def analyze_stock(ticker_symbol, stock_name):
     future_dates = [pd.to_datetime(pd.Timestamp.fromordinal(int(i))) for i in future_dates_ordinal.flatten()]
 
     # --- Create the Plot ---
+    st.header(f"Analysis for: {stock_name}")
+    
     fig = make_subplots(
         rows=3,
         cols=1,
@@ -81,19 +94,14 @@ def analyze_stock(ticker_symbol, stock_name):
 
     # Candlestick chart with Moving Averages
     fig.add_trace(go.Candlestick(
-        x=stock_data.index,
-        open=stock_data['Open'],
-        high=stock_data['High'],
-        low=stock_data['Low'],
-        close=stock_data['Close'],
-        name="Candlestick"
+        x=stock_data.index, open=stock_data['Open'], high=stock_data['High'],
+        low=stock_data['Low'], close=stock_data['Close'], name="Candlestick"
     ), row=1, col=1)
     fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['MA50'], mode='lines', name='50-Day MA', line=dict(color='orange')), row=1, col=1)
     fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['MA200'], mode='lines', name='200-Day MA', line=dict(color='purple')), row=1, col=1)
 
     # Add predicted prices to the main chart
     fig.add_trace(go.Scatter(x=future_dates, y=predicted_prices, mode='lines', name='Prediction (14 days)', line=dict(color='cyan', dash='dot')), row=1, col=1)
-
 
     # RSI
     fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['RSI'], mode='lines', name='RSI'), row=2, col=1)
@@ -106,10 +114,12 @@ def analyze_stock(ticker_symbol, stock_name):
 
     fig.update_layout(
         height=700,
-        title_text=f"Technical Analysis: {stock_name}",
         legend_title="Indicators",
         xaxis_rangeslider_visible=False,
     )
+    
+    # Use Streamlit to display the plot
+    st.plotly_chart(fig, use_container_width=True)
 
     # --- Bearish Analysis Text ---
     last_close = stock_data['Close'].iloc[-1]
@@ -120,33 +130,23 @@ def analyze_stock(ticker_symbol, stock_name):
     signal = stock_data['Signal_Line'].iloc[-1]
     
     analysis_text = f"""
-    ### Bearish Scenario Analysis for {stock_name}
+    #### Bearish Scenario Analysis
 
     * **Moving Averages:** The 50-day MA ({ma50:.2f}) is currently {'above' if ma50 > ma200 else 'below'} the 200-day MA ({ma200:.2f}). A "death cross" (50-day MA crossing below 200-day MA) is a strong bearish signal. The current price ({last_close:.2f}) is trading {'above' if last_close > ma50 else 'below'} its 50-day moving average, suggesting short-term weakness.
     * **RSI:** The current RSI is {rsi:.2f}. An RSI above 70 is often considered overbought, suggesting a potential pullback. While not in extreme territory, any move towards 70 could indicate building selling pressure.
     * **MACD:** The MACD line ({macd:.2f}) is currently {'above' if macd > signal else 'below'} the Signal line ({signal:.2f}). A crossover where the MACD line goes below the Signal line is a bearish indicator.
     * **Prediction:** Based on a linear regression of the last 60 days, the predicted price for the next two weeks shows a potential continuation of the recent trend. The predicted price in 14 days is **{predicted_prices[-1]:.2f}**.
 
-    **Disclaimer:** This is a simplified analysis and not financial advice.
+    **Disclaimer:** *This is a simplified analysis and not financial advice.*
     """
+    
+    # Use Streamlit to display the analysis
+    st.markdown(analysis_text)
+    st.markdown("---")
 
-    return html.Div([
-        dcc.Graph(figure=fig),
-        dcc.Markdown(analysis_text, style={'padding': '20px', 'border': '1px solid #ddd', 'border-radius': '5px', 'margin-top': '20px'})
-    ])
 
-# --- App Layout ---
-app.layout = html.Div([
-    html.H1("Stock Market Technical Analysis (Bearish Scenario)", style={'textAlign': 'center'}),
-    html.P("This dashboard displays a technical analysis of selected stocks with a focus on identifying potential bearish trends. All data is fetched in real-time.", style={'textAlign': 'center'}),
-    html.Hr(),
-    # Generate a section for each stock
-    *[html.Div([
-        html.H2(stock_name, style={'textAlign': 'center'}),
-        analyze_stock(ticker, stock_name)
-    ], style={'padding': '20px'}) for stock_name, ticker in tickers.items()]
-])
+# --- Main App Logic ---
+# Generate a section for each stock
+for stock_name, ticker in tickers.items():
+    analyze_stock(ticker, stock_name)
 
-# --- Run the App ---
-if __name__ == '__main__':
-    app.run_server(debug=True)
